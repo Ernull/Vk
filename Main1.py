@@ -41,7 +41,7 @@ ADMIN_IDS = [int(aid.strip()) for aid in os.environ.get("ADMIN_ID", "0").split("
 
 PHONE, OTP, ASK_TAG, ASK_SEARCH = range(4)
 
-executor = ThreadPoolExecutor(max_workers=40)
+executor = ThreadPoolExecutor(max_workers=20)
 
 # قفل‌های سراسری برای جلوگیری از تداخل عملیات‌های سنگین و صف‌بندی چند فایل زیپ
 zip_queue_lock = asyncio.Lock()
