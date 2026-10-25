@@ -22,7 +22,7 @@ from aiohttp import web
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
-    CommandHandler,55
+    CommandHandler,
     MessageHandler,
     filters,
     ContextTypes,
