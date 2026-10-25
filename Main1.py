@@ -22,7 +22,7 @@ from aiohttp import web
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
-    CommandHandler,
+    CommandHandler,55
     MessageHandler,
     filters,
     ContextTypes,
@@ -41,7 +41,7 @@ ADMIN_IDS = [int(aid.strip()) for aid in os.environ.get("ADMIN_ID", "0").split("
 
 PHONE, OTP, ASK_TAG, ASK_SEARCH = range(4)
 
-executor = ThreadPoolExecutor(max_workers=20)
+executor = ThreadPoolExecutor(max_workers=40)
 
 # قفل‌های سراسری برای جلوگیری از تداخل عملیات‌های سنگین و صف‌بندی چند فایل زیپ
 zip_queue_lock = asyncio.Lock()
@@ -856,23 +856,66 @@ class OkalaAPI:
         url = f'https://apigateway.okala.com/api/voyager/C/CustomerAccount/DeleteAddress/{address_id}/'
         return self.make_request('DELETE', url, access_token=token, proxy_dict=proxy_dict, fast_mode=fast_mode)
 
-    def get_orders_api(self, token, proxy_dict=None, keep_session_ids=False, fast_mode=True):
-        url = "https://apigateway.okala.com/api/voyager/C/Order/GetOrders"
-        payload = {"pageIndex": 1, "pageSize": 10}
-        return self.make_request('POST', url, access_token=token, proxy_dict=proxy_dict, keep_session_ids=keep_session_ids, fast_mode=fast_mode, json=payload)
+    def get_orders_api(self, token, proxy_dict=None, keep_session_ids=False, fast_mode=True, customer_id=None, data_dict=None):
+        uid = customer_id or get_numeric_customer_id_from_token(token, data_dict)
+        url = "https://apigateway.okala.com/api/v1/customerorders/list"
+        params = {"PageNumber": "1", "PageSize": "10"}
+        if uid and int(uid) > 0:
+            params["customerId"] = str(uid)
+        extra_headers = {
+            "X-Skip-Authorization": "false",
+            "advertising_id": "null",
+            "idfa": "null",
+            "metrix_user_id": "null"
+        }
+        return self.make_request(
+            'GET',
+            url,
+            access_token=token,
+            proxy_dict=proxy_dict,
+            keep_session_ids=keep_session_ids,
+            fast_mode=fast_mode,
+            params=params,
+            headers=extra_headers
+        )
 
 
 def parse_orders_response(status, response_data):
     if status == 200 and isinstance(response_data, dict):
-        data = response_data.get('data', {})
+        if response_data.get("hasValidationError") is True or response_data.get("success") is False:
+            return False, False, 0
+        data = response_data.get('data')
+        if data is None:
+            return True, False, 0
         if isinstance(data, list):
             return True, len(data) > 0, len(data)
         elif isinstance(data, dict):
-            orders = data.get('orders') or data.get('items') or []
+            total_records = data.get('totalRecords')
+            if total_records is not None:
+                try:
+                    tr_int = int(total_records)
+                    if tr_int > 0:
+                        return True, True, tr_int
+                except (ValueError, TypeError):
+                    pass
             total_count = data.get('totalCount')
-            if total_count is not None and int(total_count) > 0:
-                return True, True, int(total_count)
-            return True, len(orders) > 0, len(orders)
+            if total_count is not None:
+                try:
+                    tc_int = int(total_count)
+                    if tc_int > 0:
+                        return True, True, tc_int
+                except (ValueError, TypeError):
+                    pass
+            items_field = data.get('items')
+            if isinstance(items_field, dict):
+                orders_list = items_field.get('orders') or items_field.get('items') or []
+                if isinstance(orders_list, list):
+                    return True, len(orders_list) > 0, len(orders_list)
+            elif isinstance(items_field, list):
+                return True, len(items_field) > 0, len(items_field)
+            orders = data.get('orders') or []
+            if isinstance(orders, list):
+                return True, len(orders) > 0, len(orders)
         return True, False, 0
     return False, False, 0
 
@@ -3216,8 +3259,9 @@ async def process_user_submitted_targets_batch(bot, chat_id: int, mode: str, bat
 
                     # --- حالت ۳: بررسی سابقه خرید لینک/زیپ ارسالی کاربر ---
                     elif mode == 'user_check_orders':
+                        cust_uid = get_numeric_customer_id_from_token(acc_tok, data)
                         ord_status, ord_res = await loop.run_in_executor(
-                            executor, api.get_orders_api, acc_tok, proxy_dict, False, True
+                            executor, api.get_orders_api, acc_tok, proxy_dict, False, True, cust_uid, data
                         )
                         if ord_status == 401 and ref_tok:
                             st, n_acc, n_ref, _, _ = await loop.run_in_executor(
@@ -3227,8 +3271,9 @@ async def process_user_submitted_targets_batch(bot, chat_id: int, mode: str, bat
                                 acc_tok = n_acc
                                 ref_tok = n_ref or ref_tok
                                 data = update_tokens_in_data(data, old_acc, acc_tok, old_ref, ref_tok)
+                                cust_uid = get_numeric_customer_id_from_token(acc_tok, data) or cust_uid
                                 ord_status, ord_res = await loop.run_in_executor(
-                                    executor, api.get_orders_api, acc_tok, proxy_dict, False, True
+                                    executor, api.get_orders_api, acc_tok, proxy_dict, False, True, cust_uid, data
                                 )
 
                         if acc_tok != old_acc and phone:
@@ -4972,7 +5017,7 @@ async def main():
     application.add_handler(
         MessageHandler(
             (filters.TEXT & ~filters.COMMAND) | filters.Document.FileExtension("txt") | filters.Document.FileExtension("json"),
-            handle_admin_text_document
+            handle_admin_text_documentpppp
         )
     )
 
