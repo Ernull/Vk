@@ -61,8 +61,13 @@ USER_AGENTS = [
     "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36"
 ]
 
-FIRST_NAMES = ["علی", "محمد", "امیر", "حسین", "رضا", "مهدی", "سجاد", "نیما", "عرفان", "پوریا", "سارا", "مریم", "فاطمه", "زهرا", "الهام", "نرگس", "یلدا", "نگار", "مهسا"]
-LAST_NAMES = ["محمدی", "حسینی", "احمدی", "رضایی", "کریمی", "موسوی", "جعفری", "قاسمی", "حیدری", "صادقی", "مرادی", "رحیمی", "اکبری", "طاهری", "رستمی"]
+MALE_FIRST_NAMES = ["علی", "محمد", "امیر", "حسین", "رضا", "مهدی", "سجاد", "نیما", "عرفان", "پوریا", "کیان", "آرش", "پارسا", "سینا", "شایان", "بهنام", "فرهاد", "احسان"]
+FEMALE_FIRST_NAMES = ["سارا", "مریم", "فاطمه", "زهرا", "الهام", "نرگس", "یلدا", "نگار", "مهسا", "نازنین", "شیما", "پریسا", "غزل", "باران", "هلیا", "ریحانه"]
+FIRST_NAMES = MALE_FIRST_NAMES + FEMALE_FIRST_NAMES
+LAST_NAMES = ["محمدی", "حسینی", "احمدی", "رضایی", "کریمی", "موسوی", "جعفری", "قاسمی", "حیدری", "صادقی", "مرادی", "رحیمی", "اکبری", "طاهری", "رستمی", "زارع", "کاظمی", "ابراهیمی", "هاشمی", "سلیمانی"]
+
+# عمر پیش‌فرض رفرش‌توکن در سرویس Identity اکالا (۳۰ روز بر حسب ثانیه)
+REFRESH_TOKEN_ESTIMATED_TTL_SECONDS = 30 * 86400
 
 # آدرس پیش‌فرض تهران (مطابق با استاندارد نقشه ParsiMap در Main 9)
 DEFAULT_TEHRAN_ADDRESS = {
@@ -303,6 +308,36 @@ async def get_all_existing_phones_in_db() -> set:
 
 def get_random_persian_name():
     return random.choice(FIRST_NAMES), random.choice(LAST_NAMES)
+
+
+def get_random_persian_profile():
+    """تولید نام، نام خانوادگی، جنسیت و تاریخ تولد تصادفی استاندارد برای پروفایل اکالا"""
+    is_male = random.choice([True, False])
+    if is_male:
+        first_name = random.choice(MALE_FIRST_NAMES)
+        gender_code = 1
+        gender_title = "مذکر"
+        gender_str = "male"
+    else:
+        first_name = random.choice(FEMALE_FIRST_NAMES)
+        gender_code = 2
+        gender_title = "مونث"
+        gender_str = "female"
+    last_name = random.choice(LAST_NAMES)
+    # تاریخ تولد تصادفی بین سال‌های 1982 تا 2004 (تنظیم شده روی ساعت 00:00:00+03:30 مشابه 1005683400)
+    base_epoch = 1005683400  # 2001-11-14T00:00:00+03:30
+    random_days_offset = random.randint(-6500, 900)
+    birth_epoch = base_epoch + (random_days_offset * 86400)
+    birth_dt_str = datetime.fromtimestamp(birth_epoch).strftime("%Y-%m-%dT00:00:00+03:30")
+    return {
+        "firstName": first_name,
+        "lastName": last_name,
+        "genderCode": gender_code,
+        "genderTitle": gender_title,
+        "gender": gender_str,
+        "birthDateEpoch": birth_epoch,
+        "birthDate": birth_dt_str
+    }
 
 
 def mask_proxy(proxy_dict) -> str:
@@ -647,6 +682,279 @@ def update_tokens_in_data(data, old_acc, new_acc, old_ref, new_ref):
         return data
 
 
+PLACEHOLDER_NAMES = {"", "کاربر", "اکالا", "نامشخص", "بدون نام", "null", "none", "user", "okala", "unknown"}
+
+
+def _is_missing_name(val) -> bool:
+    if not val or not isinstance(val, str):
+        return True
+    cleaned = val.strip().lower()
+    return cleaned in PLACEHOLDER_NAMES or len(cleaned) < 2
+
+
+def extract_profile_from_json_data(data: dict) -> dict:
+    """استخراج اطلاعات پروفایل (نام، نام خانوادگی، تاریخ تولد و جنسیت) از ساختار JSON اکانت"""
+    info = {
+        "firstName": "",
+        "lastName": "",
+        "birthDate": "",
+        "birthDateEpoch": 0,
+        "genderCode": 1,
+        "emailAddress": ""
+    }
+    if not isinstance(data, dict):
+        return info
+
+    for origin in data.get("origins", []):
+        if not isinstance(origin, dict):
+            continue
+        for item in origin.get("localStorage", []):
+            if not isinstance(item, dict):
+                continue
+            i_name = item.get("name")
+            i_val = item.get("value")
+            if i_name == "user" and i_val:
+                try:
+                    u_obj = json.loads(urllib.parse.unquote(i_val))
+                    if isinstance(u_obj, dict):
+                        info["firstName"] = u_obj.get("firstName") or info["firstName"]
+                        info["lastName"] = u_obj.get("lastName") or info["lastName"]
+                        info["birthDate"] = u_obj.get("birthDate") or info["birthDate"]
+                        info["birthDateEpoch"] = u_obj.get("birthDateEpoch") or info["birthDateEpoch"]
+                        info["genderCode"] = u_obj.get("genderCode") or info["genderCode"]
+                        info["emailAddress"] = u_obj.get("emailAddress") or info["emailAddress"]
+                except Exception:
+                    pass
+            elif i_name == "persist:root" and i_val:
+                try:
+                    p_root = json.loads(i_val)
+                    u_outer = json.loads(p_root.get("user", "{}"))
+                    u_inner = u_outer.get("user", {})
+                    if isinstance(u_inner, dict):
+                        if _is_missing_name(info["firstName"]) and u_inner.get("firstName"):
+                            info["firstName"] = u_inner.get("firstName")
+                        if _is_missing_name(info["lastName"]) and u_inner.get("lastName"):
+                            info["lastName"] = u_inner.get("lastName")
+                        if not info["birthDate"] and u_inner.get("birthDate"):
+                            info["birthDate"] = u_inner.get("birthDate")
+                        if not info["birthDateEpoch"] and u_inner.get("birthDateEpoch"):
+                            info["birthDateEpoch"] = u_inner.get("birthDateEpoch")
+                except Exception:
+                    pass
+    return info
+
+
+def prepare_profile_update_payload(existing_info: dict) -> tuple:
+    """
+    بررسی نام و تاریخ تولد اکانت:
+    اگر نام یا نام خانوادگی نداشت (یا پیش‌فرض بود)، یک نام تصادفی می‌گذارد.
+    اگر تاریخ تولد نداشت، یک تاریخ تولد تصادفی تنظیم می‌کند.
+    خروجی: (payload_dict, was_name_generated, was_birth_generated)
+    """
+    rand_prof = get_random_persian_profile()
+    cur_first = (existing_info or {}).get("firstName", "")
+    cur_last = (existing_info or {}).get("lastName", "")
+    cur_epoch = (existing_info or {}).get("birthDateEpoch") or 0
+    cur_email = (existing_info or {}).get("emailAddress") or ""
+
+    name_generated = False
+    birth_generated = False
+
+    if _is_missing_name(cur_first) or _is_missing_name(cur_last):
+        first_name = rand_prof["firstName"] if _is_missing_name(cur_first) else cur_first.strip()
+        last_name = rand_prof["lastName"] if _is_missing_name(cur_last) else cur_last.strip()
+        gender_code = rand_prof["genderCode"]
+        gender_title = rand_prof["genderTitle"]
+        gender_str = rand_prof["gender"]
+        name_generated = True
+    else:
+        first_name = cur_first.strip()
+        last_name = cur_last.strip()
+        if first_name in FEMALE_FIRST_NAMES:
+            gender_code, gender_title, gender_str = 2, "مونث", "female"
+        else:
+            gender_code, gender_title, gender_str = 1, "مذکر", "male"
+
+    try:
+        cur_epoch_int = int(cur_epoch)
+    except (ValueError, TypeError):
+        cur_epoch_int = 0
+
+    if cur_epoch_int <= 0:
+        birth_epoch = rand_prof["birthDateEpoch"]
+        birth_generated = True
+    else:
+        birth_epoch = cur_epoch_int
+
+    payload = {
+        "birthDate": "",
+        "birthDateEpoch": birth_epoch,
+        "customerType": 0,
+        "emailAddress": str(cur_email or ""),
+        "firstName": first_name,
+        "genderCode": gender_code,
+        "genderTitle": gender_title,
+        "lastName": last_name,
+        "gender": gender_str
+    }
+    return payload, name_generated, birth_generated
+
+
+def update_profile_in_json_data(data: dict, first_name: str, last_name: str, birth_date_str: str, birth_epoch: int, gender_code: int = 1, customer_id: int = None) -> dict:
+    """بروزرسانی نام، نام خانوادگی و تاریخ تولد در ساختار JSON لینک/فایل (localStorage -> user و persist:root)"""
+    try:
+        if isinstance(data, str):
+            data = json.loads(data)
+        updated = json.loads(json.dumps(data, ensure_ascii=False))
+
+        for origin in updated.get("origins", []):
+            if not isinstance(origin, dict):
+                continue
+            for item in origin.get("localStorage", []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("name") == "user" and item.get("value"):
+                    try:
+                        u_obj = json.loads(urllib.parse.unquote(item["value"]))
+                        if isinstance(u_obj, dict):
+                            u_obj["firstName"] = first_name
+                            u_obj["lastName"] = last_name
+                            u_obj["birthDate"] = birth_date_str
+                            u_obj["birthDateEpoch"] = birth_epoch
+                            u_obj["genderCode"] = gender_code
+                            if customer_id and int(customer_id) > 0:
+                                u_obj["id"] = int(customer_id)
+                            item["value"] = urllib.parse.quote(json.dumps(u_obj, ensure_ascii=False))
+                    except Exception:
+                        pass
+                elif item.get("name") == "persist:root" and item.get("value"):
+                    try:
+                        p_root = json.loads(item["value"])
+                        if "user" in p_root:
+                            u_outer = json.loads(p_root["user"])
+                            if "user" in u_outer and isinstance(u_outer["user"], dict):
+                                u_outer["user"]["firstName"] = first_name
+                                u_outer["user"]["lastName"] = last_name
+                                u_outer["user"]["birthDate"] = birth_date_str
+                                u_outer["user"]["birthDateEpoch"] = birth_epoch
+                                u_outer["user"]["genderCode"] = gender_code
+                                if customer_id and int(customer_id) > 0:
+                                    u_outer["user"]["id"] = int(customer_id)
+                                p_root["user"] = json.dumps(u_outer, ensure_ascii=False)
+                                item["value"] = json.dumps(p_root, ensure_ascii=False)
+                    except Exception:
+                        pass
+        return updated
+    except Exception:
+        return data
+
+
+def format_duration_persian(seconds: int) -> str:
+    """تبدیل ثانیه به فرمت خوانای فارسی (روز، ساعت، دقیقه)"""
+    neg = seconds < 0
+    sec = abs(int(seconds))
+    days, rem = divmod(sec, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, _ = divmod(rem, 60)
+
+    parts = []
+    if days > 0:
+        parts.append(f"{days} روز")
+    if hours > 0:
+        parts.append(f"{hours} ساعت")
+    if mins > 0 or not parts:
+        parts.append(f"{mins} دقیقه")
+    res = " و ".join(parts)
+    return f"{res} پیش" if neg else res
+
+
+def analyze_token_and_refresh_expiration(access_token: str, refresh_token: str, now_ts: int = None) -> dict:
+    """
+    محاسبه دقیق زمان صدور و انقضای Access Token (از روی فیلدهای JWT: exp, iat, auth_time)
+    و بررسی وضعیت و تخمین انقضای Refresh Token (بر اساس زمان صدور توکن / ورود اولیه و عمر ۳۰ روزه offline_access).
+    """
+    if now_ts is None:
+        now_ts = int(time.time())
+
+    jwt_data = decode_jwt_payload(access_token) if access_token else {}
+    exp_ts = int(jwt_data.get("exp") or 0)
+    iat_ts = int(jwt_data.get("iat") or jwt_data.get("nbf") or 0)
+    auth_ts = int(jwt_data.get("auth_time") or iat_ts or 0)
+
+    # ۱. تحلیل Access Token
+    if exp_ts > 0:
+        acc_rem = exp_ts - now_ts
+        acc_exp_date = datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d %H:%M:%S")
+        acc_iat_date = datetime.fromtimestamp(iat_ts).strftime("%Y-%m-%d %H:%M:%S") if iat_ts > 0 else "نامشخص"
+        acc_is_valid = acc_rem > 0
+        acc_rem_str = format_duration_persian(acc_rem)
+        if acc_is_valid:
+            acc_status_text = f"🟢 فعال (تا {acc_exp_date} — {acc_rem_str} مانده)"
+        else:
+            acc_status_text = f"🔴 منقضی شده (در {acc_exp_date} — {acc_rem_str})"
+    else:
+        acc_rem = -999999
+        acc_exp_date = "نامشخص"
+        acc_iat_date = "نامشخص"
+        acc_is_valid = False
+        acc_rem_str = "نامشخص"
+        acc_status_text = "❌ فاقد Access Token معتبر" if not access_token else "⚠️ ساختار JWT نامعتبر"
+
+    # ۲. تحلیل Refresh Token
+    has_refresh = bool(refresh_token and str(refresh_token).strip())
+    auth_date_str = datetime.fromtimestamp(auth_ts).strftime("%Y-%m-%d %H:%M:%S") if auth_ts > 0 else "نامشخص"
+    base_ref_ts = iat_ts if iat_ts > 0 else auth_ts
+
+    if has_refresh:
+        if base_ref_ts > 0:
+            est_ref_exp_ts = base_ref_ts + REFRESH_TOKEN_ESTIMATED_TTL_SECONDS
+            ref_rem = est_ref_exp_ts - now_ts
+            ref_exp_date = datetime.fromtimestamp(est_ref_exp_ts).strftime("%Y-%m-%d %H:%M:%S")
+            ref_rem_str = format_duration_persian(ref_rem)
+            session_age_str = format_duration_persian(now_ts - auth_ts) if auth_ts > 0 else "نامشخص"
+            if ref_rem > 0:
+                ref_status_text = f"🟢 موجود — تخمین انقضا: {ref_exp_date} ({ref_rem_str} مانده | عمر نشست: {session_age_str})"
+                ref_est_valid = True
+            else:
+                ref_status_text = f"🟠 احتمالاً منقضی (گذشته از بازه ۳۰ روزه: {ref_exp_date} — {ref_rem_str})"
+                ref_est_valid = False
+        else:
+            est_ref_exp_ts = 0
+            ref_rem = 0
+            ref_exp_date = "نیازمند تست آنلاین"
+            ref_rem_str = "نامشخص"
+            ref_status_text = "🟡 موجود (زمان صدور در JWT یافت نشد — قابل بررسی با تست آنلاین)"
+            ref_est_valid = True
+    else:
+        est_ref_exp_ts = 0
+        ref_rem = -999999
+        ref_exp_date = "ندارد"
+        ref_rem_str = "ندارد"
+        ref_status_text = "❌ فاقد Refresh Token"
+        ref_est_valid = False
+
+    return {
+        "has_access": bool(access_token),
+        "acc_is_valid": acc_is_valid,
+        "acc_exp_ts": exp_ts,
+        "acc_iat_ts": iat_ts,
+        "auth_time_ts": auth_ts,
+        "acc_exp_date": acc_exp_date,
+        "acc_iat_date": acc_iat_date,
+        "auth_date": auth_date_str,
+        "acc_remaining_sec": acc_rem,
+        "acc_remaining_str": acc_rem_str,
+        "acc_status_text": acc_status_text,
+        "has_refresh": has_refresh,
+        "ref_est_valid": ref_est_valid,
+        "ref_est_exp_ts": est_ref_exp_ts,
+        "ref_est_exp_date": ref_exp_date,
+        "ref_remaining_sec": ref_rem,
+        "ref_remaining_str": ref_rem_str,
+        "ref_status_text": ref_status_text,
+    }
+
+
 class OkalaAPI:
     def __init__(self, custom_headers=None, proxies_list=None):
         self.request_logs = []
@@ -857,6 +1165,30 @@ class OkalaAPI:
     def delete_address_api(self, token, address_id, proxy_dict=None, fast_mode=True):
         url = f'https://apigateway.okala.com/api/voyager/C/CustomerAccount/DeleteAddress/{address_id}/'
         return self.make_request('DELETE', url, access_token=token, proxy_dict=proxy_dict, fast_mode=fast_mode)
+
+    def update_customer_profile_api(self, token, payload: dict, proxy_dict=None, fast_mode=True):
+        """
+        بروزرسانی پروفایل مشتری (نام، نام خانوادگی، تاریخ تولد و جنسیت)
+        دقیقاً مطابق ساختار شبکه اکالا:
+        POST https://apigateway.okala.com/api/voyager/C/CustomerAccount/UpdateCustomer
+        """
+        url = "https://apigateway.okala.com/api/voyager/C/CustomerAccount/UpdateCustomer"
+        extra_headers = {
+            "Content-Type": "application/json",
+            "X-Skip-Authorization": "false",
+            "advertising_id": "null",
+            "idfa": "null",
+            "metrix_user_id": "null"
+        }
+        return self.make_request(
+            'POST',
+            url,
+            access_token=token,
+            proxy_dict=proxy_dict,
+            fast_mode=fast_mode,
+            json=payload,
+            headers=extra_headers
+        )
 
     def get_orders_api(self, token, proxy_dict=None, keep_session_ids=False, fast_mode=True, customer_id=None, data_dict=None):
         uid = customer_id or get_numeric_customer_id_from_token(token, data_dict)
@@ -2426,6 +2758,402 @@ async def process_delete_addresses_for_db(bot, chat_id: int, acc_keys: list):
 
 
 # ==========================================
+# ۴. بروزرسانی پروفایل (نام تصادفی و تاریخ تولد) برای اکانت‌های دیتابیس
+# ==========================================
+async def process_update_profile_for_db(bot, chat_id: int, acc_keys: list):
+    if heavy_task_lock.locked():
+        await bot.send_message(chat_id=chat_id, text="⚠️ یک عملیات سنگین هم‌اکنون در حال اجراست. لطفاً تا پایان آن صبر کنید.")
+        return
+
+    async with heavy_task_lock:
+        loop = asyncio.get_running_loop()
+        proxies_list = await get_all_proxies_from_db()
+        api = OkalaAPI(proxies_list=proxies_list)
+        ts = int(time.time())
+        phone_to_latest_link = await build_phone_to_link_map()
+
+        total = len(acc_keys)
+        progress_msg = await bot.send_message(
+            chat_id=chat_id,
+            text=f"👤 <b>شروع بروزرسانی پروفایل (نام و تاریخ تولد) برای {total} اکانت دیتابیس...</b>\n⏳ لطفاً منتظر بمانید.",
+            parse_mode='HTML'
+        )
+
+        stats = {"updated": 0, "random_named": 0, "failed": 0, "expired": 0}
+        updated_links = []
+        detail_logs = []
+        done = 0
+        last_edit_time = 0.0
+        lock = asyncio.Lock()
+        sem = asyncio.Semaphore(20)
+
+        def _update_prof_sync(acc_token, ref_token, payload, p_dict, phone, idx):
+            new_acc, new_ref = None, None
+            status, res = api.update_customer_profile_api(acc_token, payload, proxy_dict=p_dict, fast_mode=True)
+            if status == 401 and ref_token:
+                st, new_acc, new_ref, _, _ = api.refresh_token_sequential_proxy(ref_token, start_proxy_idx=idx)
+                if st == "success" and new_acc:
+                    acc_token = new_acc
+                    status, res = api.update_customer_profile_api(acc_token, payload, proxy_dict=p_dict, fast_mode=True)
+                else:
+                    return "expired", None, None, status, res
+
+            if status == 200 and isinstance(res, dict) and res.get("success") is not False:
+                return "updated", new_acc, new_ref, status, res
+            elif status == 401:
+                return "expired", new_acc, new_ref, status, res
+            return "failed", new_acc, new_ref, status, res
+
+        async def _worker(idx, key):
+            nonlocal done, last_edit_time
+            phone = clean_digits(key.replace("account:", ""))
+            async with sem:
+                try:
+                    token_data = await redis_client.hgetall(key)
+                    access_token = token_data.get("access_token", "")
+                    refresh_token = token_data.get("refresh_token", "")
+
+                    if not access_token and not refresh_token:
+                        async with lock:
+                            stats["expired"] += 1
+                            done += 1
+                            detail_logs.append(f"[{time.strftime('%H:%M:%S')}] ❌ {phone} — فاقد توکن\n")
+                        return
+
+                    if not access_token and refresh_token:
+                        st, r_acc, r_ref, _, _ = await loop.run_in_executor(
+                            executor, api.refresh_token_sequential_proxy, refresh_token, idx
+                        )
+                        if st == "success" and r_acc:
+                            access_token = r_acc
+                            refresh_token = r_ref or refresh_token
+                            await redis_client.hset(f"account:{phone}", mapping={"access_token": access_token, "refresh_token": refresh_token or ""})
+
+                    link = phone_to_latest_link.get(phone) or await redis_client.get(f"phone_active_link:{phone}")
+                    lid = link.split('/acc/')[-1].strip() if (link and '/acc/' in link) else None
+                    link_data = None
+                    if lid:
+                        raw_l = await redis_client.get(f"acc_link:{lid}")
+                        if raw_l:
+                            try:
+                                link_data = json.loads(raw_l)
+                            except Exception:
+                                pass
+
+                    existing_prof = extract_profile_from_json_data(link_data) if isinstance(link_data, dict) else {}
+                    payload, name_gen, birth_gen = prepare_profile_update_payload(existing_prof)
+                    proxy_dict = get_proxy_by_index(proxies_list, idx)
+
+                    res_state, new_acc, new_ref, st_code, resp_obj = await loop.run_in_executor(
+                        executor, _update_prof_sync, access_token, refresh_token, payload, proxy_dict, phone, idx
+                    )
+
+                    old_acc, old_ref = access_token, refresh_token
+                    if new_acc:
+                        access_token = new_acc
+                        refresh_token = new_ref or refresh_token
+                        await redis_client.hset(f"account:{phone}", mapping={"access_token": access_token, "refresh_token": refresh_token or ""})
+
+                    final_url = await ensure_permanent_link_for_db_account(phone, old_acc, access_token, old_ref, refresh_token, phone_to_latest_link)
+                    final_lid = final_url.split('/acc/')[-1].strip() if '/acc/' in final_url else None
+
+                    if res_state == "updated":
+                        resp_data = (resp_obj.get("data") or {}) if isinstance(resp_obj, dict) else {}
+                        f_name = resp_data.get("firstName") or payload["firstName"]
+                        l_name = resp_data.get("lastName") or payload["lastName"]
+                        b_str = resp_data.get("birthDate") or ""
+                        b_ep = resp_data.get("birthDateEpoch") or payload["birthDateEpoch"]
+                        g_code = resp_data.get("genderCode") or payload["genderCode"]
+                        c_id = resp_data.get("id")
+
+                        if final_lid:
+                            cur_l_str = await redis_client.get(f"acc_link:{final_lid}")
+                            if cur_l_str:
+                                updated_l_json = update_profile_in_json_data(cur_l_str, f_name, l_name, b_str, b_ep, g_code, c_id)
+                                await redis_client.set(f"acc_link:{final_lid}", json.dumps(updated_l_json, ensure_ascii=False))
+
+                        b_readable = b_str.split("T")[0] if "T" in str(b_str) else datetime.fromtimestamp(b_ep).strftime("%Y-%m-%d")
+                        async with lock:
+                            stats["updated"] += 1
+                            if name_gen:
+                                stats["random_named"] += 1
+                            updated_links.append({
+                                "phone": phone,
+                                "name": f"{f_name} {l_name}",
+                                "birth": b_readable,
+                                "link": final_url
+                            })
+                            detail_logs.append(f"[{time.strftime('%H:%M:%S')}] ✅ {phone} | نام: {f_name} {l_name} | تولد: {b_readable} | {final_url}\n")
+                    elif res_state == "expired":
+                        async with lock:
+                            stats["expired"] += 1
+                            detail_logs.append(f"[{time.strftime('%H:%M:%S')}] 🔒 {phone} | توکن منقضی شده است.\n")
+                    else:
+                        async with lock:
+                            stats["failed"] += 1
+                            detail_logs.append(f"[{time.strftime('%H:%M:%S')}] ❌ {phone} | خطا در بروزرسانی پروفایل ({st_code}): {str(resp_obj)[:180]}\n")
+
+                    async with lock:
+                        done += 1
+                        now = time.time()
+                        if (now - last_edit_time >= 2.0) or (done == total):
+                            last_edit_time = now
+                            try:
+                                await progress_msg.edit_text(
+                                    f"👤 <b>در حال بروزرسانی پروفایل اکانت‌های دیتابیس...</b>\n"
+                                    f"📊 پیشرفت: <b>{done}/{total}</b>\n"
+                                    f"✅ پروفایل بروزشده: <b>{stats['updated']}</b> (نام تصادفی جدید: <b>{stats['random_named']}</b>)\n"
+                                    f"🔒 منقضی: <b>{stats['expired']}</b> | ❌ خطا: <b>{stats['failed']}</b>",
+                                    parse_mode='HTML'
+                                )
+                            except Exception:
+                                pass
+                except Exception as e:
+                    async with lock:
+                        stats["failed"] += 1
+                        done += 1
+                        detail_logs.append(f"[{time.strftime('%H:%M:%S')}] ❌ خطای سیستم برای {phone}: {e}\n")
+
+        await asyncio.gather(*[_worker(i, k) for i, k in enumerate(acc_keys)])
+        try:
+            await progress_msg.delete()
+        except Exception:
+            pass
+
+        summary_caption = (
+            f"✅ <b>بروزرسانی پروفایل اکانت‌های دیتابیس به پایان رسید.</b>\n\n"
+            f"👥 <b>کل اکانت‌ها:</b> <code>{total}</code>\n"
+            f"🟢 <b>پروفایل بروزشده:</b> <code>{stats['updated']}</code>\n"
+            f"🎲 <b>نام و تاریخ تولد تصادفی ثبت‌شده:</b> <code>{stats['random_named']}</code>\n"
+            f"🔒 <b>توکن منقضی:</b> <code>{stats['expired']}</code>\n"
+            f"🔴 <b>خطا:</b> <code>{stats['failed']}</code>"
+        )
+
+        if updated_links:
+            out_txt = f"👤 لیست اکانت‌های دیتابیس با پروفایل بروزشده (تعداد: {len(updated_links)})\n" + "=" * 60 + "\n\n"
+            for idx, item in enumerate(updated_links, 1):
+                out_txt += f"{idx}. 📱 شماره: {item['phone']} | 👤 نام: {item['name']} | 🎂 تولد: {item['birth']}\n🔗 {item['link']}\n\n"
+            await bot.send_document(
+                chat_id=chat_id,
+                document=io.BytesIO(out_txt.encode('utf-8')),
+                filename=f"DB_Profile_Updated_{ts}.txt",
+                caption=summary_caption,
+                parse_mode='HTML'
+            )
+        else:
+            await bot.send_message(chat_id=chat_id, text=summary_caption, parse_mode='HTML')
+
+        try:
+            full_log = f"=== لاگ بروزرسانی پروفایل دیتابیس | {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+            full_log += "".join(detail_logs) + "\n\n=== HTTP Logs ===\n" + "".join(api.request_logs)
+            await bot.send_document(
+                chat_id=chat_id,
+                document=io.BytesIO(full_log.encode('utf-8')),
+                filename=f"DB_Profile_Update_Log_{ts}.txt",
+                caption="📄 لاگ کامل سرور (بروزرسانی پروفایل دیتابیس)"
+            )
+        except Exception:
+            pass
+
+        await bot.send_message(chat_id=chat_id, text="⚙️ بازگشت به پنل مدیریت:", reply_markup=get_admin_keyboard())
+
+
+# ==========================================
+# ۵. بررسی زمان انقضای Access Token و Refresh Token برای اکانت‌های دیتابیس
+# ==========================================
+async def process_db_token_expiration_report(bot, chat_id: int, acc_keys: list, online_verify: bool = False):
+    if heavy_task_lock.locked():
+        await bot.send_message(chat_id=chat_id, text="⚠️ یک عملیات سنگین هم‌اکنون در حال اجراست. لطفاً تا پایان آن صبر کنید.")
+        return
+
+    async with heavy_task_lock:
+        loop = asyncio.get_running_loop()
+        proxies_list = await get_all_proxies_from_db()
+        api = OkalaAPI(proxies_list=proxies_list)
+        ts = int(time.time())
+        phone_to_latest_link = await build_phone_to_link_map()
+
+        total = len(acc_keys)
+        mode_str = "🌐 تست آنلاین با سرور + بررسی زمان انقضا" if online_verify else "⚡ بررسی سریع آفلاین (بدون تغییر توکن از روی JWT)"
+        progress_msg = await bot.send_message(
+            chat_id=chat_id,
+            text=f"⏳ <b>شروع بررسی انقضای توکن و رفرش‌توکن برای {total} اکانت دیتابیس...</b>\nحالت: <b>{mode_str}</b>",
+            parse_mode='HTML'
+        )
+
+        stats = {
+            "acc_valid": 0,
+            "acc_expired_ref_valid": 0,
+            "both_expired": 0,
+            "refreshed_online": 0,
+            "proxy_error": 0
+        }
+        results_list = []
+        detail_logs = []
+        done = 0
+        last_edit_time = 0.0
+        lock = asyncio.Lock()
+        sem = asyncio.Semaphore(25 if not online_verify else 20)
+
+        async def _worker(idx, key):
+            nonlocal done, last_edit_time
+            phone = clean_digits(key.replace("account:", ""))
+            async with sem:
+                try:
+                    token_data = await redis_client.hgetall(key)
+                    access_token = token_data.get("access_token", "")
+                    refresh_token = token_data.get("refresh_token", "")
+                    old_acc, old_ref = access_token, refresh_token
+
+                    now_ts = int(time.time())
+                    info = analyze_token_and_refresh_expiration(access_token, refresh_token, now_ts)
+                    server_ref_note = ""
+
+                    if online_verify:
+                        # اگر کاربر حالت آنلاین را انتخاب کرده باشد، اعتبار واقعی در سرور هم چک می‌شود
+                        if info["acc_is_valid"]:
+                            a_state, a_code, _ = await loop.run_in_executor(
+                                executor, api.check_access_token_alive, access_token, idx
+                            )
+                            if a_state == "alive":
+                                server_ref_note = " | 🌐 تست سرور: Access فعال ✅"
+                            elif a_state == "dead" and refresh_token:
+                                r_state, n_acc, n_ref, _, _ = await loop.run_in_executor(
+                                    executor, api.refresh_token_sequential_proxy, refresh_token, idx
+                                )
+                                if r_state == "success" and n_acc:
+                                    access_token = n_acc
+                                    refresh_token = n_ref or refresh_token
+                                    await redis_client.hset(f"account:{phone}", mapping={"access_token": access_token, "refresh_token": refresh_token or ""})
+                                    info = analyze_token_and_refresh_expiration(access_token, refresh_token, int(time.time()))
+                                    server_ref_note = " | 🌐 تست سرور: رفرش‌توکن سالم و نوسازی شد ♻️✅"
+                                    async with lock:
+                                        stats["refreshed_online"] += 1
+                                elif r_state == "unrecoverable":
+                                    info["acc_is_valid"] = False
+                                    info["ref_est_valid"] = False
+                                    server_ref_note = " | 🌐 تست سرور: هر دو توکن باطل ❌"
+                                else:
+                                    server_ref_note = " | ⚠️ خطای پروکسی در تست سرور"
+                                    async with lock:
+                                        stats["proxy_error"] += 1
+                        elif refresh_token:
+                            r_state, n_acc, n_ref, _, _ = await loop.run_in_executor(
+                                executor, api.refresh_token_sequential_proxy, refresh_token, idx
+                            )
+                            if r_state == "success" and n_acc:
+                                access_token = n_acc
+                                refresh_token = n_ref or refresh_token
+                                await redis_client.hset(f"account:{phone}", mapping={"access_token": access_token, "refresh_token": refresh_token or ""})
+                                info = analyze_token_and_refresh_expiration(access_token, refresh_token, int(time.time()))
+                                server_ref_note = " | 🌐 تست سرور: رفرش‌توکن فعال و توکن جدید دریافت شد ♻️✅"
+                                async with lock:
+                                    stats["refreshed_online"] += 1
+                            elif r_state == "unrecoverable":
+                                info["ref_est_valid"] = False
+                                info["ref_status_text"] = "❌ باطل شده در سرور (Unrecoverable)"
+                                server_ref_note = " | 🌐 تست سرور: رفرش‌توکن منقضی/باطل ❌"
+                            else:
+                                server_ref_note = " | ⚠️ خطای پروکسی در تست سرور"
+                                async with lock:
+                                    stats["proxy_error"] += 1
+
+                    link = phone_to_latest_link.get(phone) or await redis_client.get(f"phone_active_link:{phone}") or ""
+                    if access_token != old_acc and link:
+                        link = await ensure_permanent_link_for_db_account(phone, old_acc, access_token, old_ref, refresh_token, phone_to_latest_link)
+
+                    async with lock:
+                        if info["acc_is_valid"]:
+                            stats["acc_valid"] += 1
+                            cat = "acc_valid"
+                        elif info["has_refresh"] and info["ref_est_valid"]:
+                            stats["acc_expired_ref_valid"] += 1
+                            cat = "ref_only"
+                        else:
+                            stats["both_expired"] += 1
+                            cat = "dead"
+
+                        results_list.append({
+                            "phone": phone,
+                            "link": link,
+                            "cat": cat,
+                            "info": info,
+                            "server_note": server_ref_note
+                        })
+                        detail_logs.append(
+                            f"[{time.strftime('%H:%M:%S')}] 📱 {phone} | Access: {info['acc_status_text']} | Refresh: {info['ref_status_text']}{server_ref_note}\n"
+                        )
+                        done += 1
+                        now = time.time()
+                        if (now - last_edit_time >= 2.0) or (done == total):
+                            last_edit_time = now
+                            try:
+                                await progress_msg.edit_text(
+                                    f"⏳ <b>بررسی انقضای توکن‌های دیتابیس...</b>\n"
+                                    f"📊 پیشرفت: <b>{done}/{total}</b>\n"
+                                    f"🟢 دارای Access Token معتبر: <b>{stats['acc_valid']}</b>\n"
+                                    f"🟡 منقضی در Access ولی دارای Refresh معتبر: <b>{stats['acc_expired_ref_valid']}</b>\n"
+                                    f"🔴 کاملاً منقضی / فاقد توکن معتبر: <b>{stats['both_expired']}</b>"
+                                    + (f"\n♻️ نوسازی شده در تست آنلاین: <b>{stats['refreshed_online']}</b>" if online_verify else ""),
+                                    parse_mode='HTML'
+                                )
+                            except Exception:
+                                pass
+                except Exception as e:
+                    async with lock:
+                        stats["both_expired"] += 1
+                        done += 1
+                        detail_logs.append(f"[{time.strftime('%H:%M:%S')}] ❌ خطا برای {phone}: {e}\n")
+
+        await asyncio.gather(*[_worker(i, k) for i, k in enumerate(acc_keys)])
+        try:
+            await progress_msg.delete()
+        except Exception:
+            pass
+
+        results_list.sort(key=lambda x: x["info"]["acc_remaining_sec"], reverse=True)
+
+        summary_text = (
+            f"⏳ <b>گزارش وضعیت و زمان انقضای توکن‌های دیتابیس:</b>\n"
+            f"🔹 <b>حالت بررسی:</b> {mode_str}\n\n"
+            f"👥 <b>کل اکانت‌های بررسی‌شده:</b> <code>{total}</code>\n"
+            f"🟢 <b>دارای Access Token فعال:</b> <code>{stats['acc_valid']}</code>\n"
+            f"🟡 <b>Access منقضی ولی دارای Refresh Token معتبر:</b> <code>{stats['acc_expired_ref_valid']}</code>\n"
+            f"🔴 <b>کاملاً منقضی / فاقد توکن:</b> <code>{stats['both_expired']}</code>\n"
+        )
+        if online_verify:
+            summary_text += (
+                f"♻️ <b>نوسازی‌شده با رفرش‌توکن در تست آنلاین:</b> <code>{stats['refreshed_online']}</code>\n"
+                f"⚠️ <b>خطای شبکه/پروکسی:</b> <code>{stats['proxy_error']}</code>\n"
+            )
+
+        report_lines = [
+            f"⏳ گزارش کامل انقضای Access Token و Refresh Token دیتابیس ({total} اکانت)",
+            f"حالت بررسی: {mode_str} | تاریخ گزارش: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            "=" * 75,
+            ""
+        ]
+        for idx, item in enumerate(results_list, 1):
+            inf = item["info"]
+            report_lines.append(f"{idx}. 📱 شماره: {item['phone']}{item['server_note']}")
+            report_lines.append(f"   🔑 وضعیت Access Token : {inf['acc_status_text']}")
+            report_lines.append(f"   🕒 زمان صدور Access   : {inf['acc_iat_date']} | زمان ورود اولیه (OTP): {inf['auth_date']}")
+            report_lines.append(f"   ♻️ وضعیت Refresh Token: {inf['ref_status_text']}")
+            if item["link"]:
+                report_lines.append(f"   🔗 لینک: {item['link']}")
+            report_lines.append("-" * 65)
+
+        await bot.send_document(
+            chat_id=chat_id,
+            document=io.BytesIO("\n".join(report_lines).encode('utf-8')),
+            filename=f"DB_Token_Expiration_Report_{ts}.txt",
+            caption=summary_text[:1020],
+            parse_mode='HTML'
+        )
+        await bot.send_message(chat_id=chat_id, text="⚙️ بازگشت به پنل مدیریت:", reply_markup=get_admin_keyboard())
+
+
+# ==========================================
 # سیستم جامع دریافت دسته‌ای (Batch Collector) برای ۱۰۰ تا ۱۰۰۰+ فایل زیپ، لینک یا فایل متنی
 # پشتیبانی از:
 #   1. تبدیل فایل زیپ به لینک دائمی (zip_to_link)
@@ -2440,6 +3168,9 @@ BATCH_MODE_TITLES = {
     'user_create_address': '📍 ساخت آدرس برای اکانت‌های ارسالی (لینک / ZIP / TXT)',
     'user_check_orders': '🛍 بررسی سابقه خرید اکانت‌های ارسالی (لینک / ZIP / TXT)',
     'user_delete_addresses': '🗑 حذف آدرس‌های اکانت‌های ارسالی (لینک / ZIP / TXT)',
+    'user_update_profile': '👤 بروزرسانی پروفایل (نام تصادفی و تاریخ تولد) (لینک / ZIP / TXT)',
+    'user_check_token_exp_fast': '⏳ بررسی سریع انقضای توکن و رفرش‌توکن (لینک / ZIP / TXT)',
+    'user_check_token_exp_online': '🌐 بررسی آنلاین انقضا و سلامت توکن و رفرش‌توکن (لینک / ZIP / TXT)',
 }
 
 
@@ -3040,11 +3771,19 @@ async def process_user_submitted_targets_batch(bot, chat_id: int, mode: str, bat
         orders_no_list = []
         orders_stats = {"has_orders": 0, "no_orders": 0, "failed": 0, "total_orders": 0}
 
+        profile_updated_list = []
+        profile_stats = {"updated": 0, "random_named": 0, "failed": 0, "expired": 0}
+
+        token_exp_results = []
+        token_exp_stats = {"acc_valid": 0, "acc_expired_ref_valid": 0, "both_expired": 0, "refreshed_online": 0, "proxy_error": 0}
+
         temp_out_dir = tempfile.mkdtemp()
         discounted_json_dir = os.path.join(temp_out_dir, "Discounted_Accounts", "accounts")
         updated_addr_json_dir = os.path.join(temp_out_dir, "Address_Updated_Accounts", "accounts")
+        updated_prof_json_dir = os.path.join(temp_out_dir, "Profile_Updated_Accounts", "accounts")
         has_discounted_json = False
         has_updated_addr_json = False
+        has_updated_prof_json = False
 
         async def _update_progress(force=False):
             now = time.time()
@@ -3071,6 +3810,16 @@ async def process_user_submitted_targets_batch(bot, chat_id: int, mode: str, bat
                     f"🛍 دارای خرید: <b>{orders_stats['has_orders']}</b> (مجموع سفارش: <b>{orders_stats['total_orders']}</b>)\n"
                     f"❌ خطا/منقضی: <b>{orders_stats['failed']}</b>"
                 )
+            elif mode == 'user_update_profile':
+                body = (
+                    f"✅ پروفایل بروزشده: <b>{profile_stats['updated']}</b> (نام تصادفی جدید: <b>{profile_stats['random_named']}</b>)\n"
+                    f"🔒 منقضی: <b>{profile_stats['expired']}</b> | ❌ خطا: <b>{profile_stats['failed']}</b>"
+                )
+            elif mode in ('user_check_token_exp_fast', 'user_check_token_exp_online'):
+                body = (
+                    f"🟢 دارای Access فعال: <b>{token_exp_stats['acc_valid']}</b>\n"
+                    f"🟡 فقط Refresh معتبر: <b>{token_exp_stats['acc_expired_ref_valid']}</b> | 🔴 منقضی کامل: <b>{token_exp_stats['both_expired']}</b>"
+                )
             else:
                 body = (
                     f"✅ اکانت موفق: <b>{addr_stats['success']}</b>\n"
@@ -3088,7 +3837,7 @@ async def process_user_submitted_targets_batch(bot, chat_id: int, mode: str, bat
                 pass
 
         async def _worker(idx, target):
-            nonlocal done, total_vouchers_found, multi_discount_accounts, has_discounted_json, has_updated_addr_json
+            nonlocal done, total_vouchers_found, multi_discount_accounts, has_discounted_json, has_updated_addr_json, has_updated_prof_json
             async with sem:
                 try:
                     t_type = target["type"]
@@ -3114,6 +3863,94 @@ async def process_user_submitted_targets_batch(bot, chat_id: int, mode: str, bat
                     phone = extr_phone or clean_digits(os.path.basename(source_label).replace('.json', '')) or f"acc_{idx+1}"
                     proxy_dict = get_proxy_by_index(proxies_list, idx)
 
+                    # برای بررسی انقضای توکن (حالت سریع یا آنلاین)، مستقیماً به بخش مربوطه برویم تا حتی اگر فقط refresh_token دارد بررسی شود
+                    if mode in ('user_check_token_exp_fast', 'user_check_token_exp_online'):
+                        online_verify = (mode == 'user_check_token_exp_online')
+                        old_acc, old_ref = acc_tok, ref_tok
+                        info = analyze_token_and_refresh_expiration(acc_tok, ref_tok, int(time.time()))
+                        server_ref_note = ""
+
+                        if online_verify:
+                            if info["acc_is_valid"] and acc_tok:
+                                a_state, _, _ = await loop.run_in_executor(
+                                    executor, api.check_access_token_alive, acc_tok, idx
+                                )
+                                if a_state == "alive":
+                                    server_ref_note = " | 🌐 تست سرور: Access فعال ✅"
+                                elif a_state == "dead" and ref_tok:
+                                    r_state, n_acc, n_ref, _, _ = await loop.run_in_executor(
+                                        executor, api.refresh_token_sequential_proxy, ref_tok, idx
+                                    )
+                                    if r_state == "success" and n_acc:
+                                        acc_tok = n_acc
+                                        ref_tok = n_ref or ref_tok
+                                        data = update_tokens_in_data(data, old_acc, acc_tok, old_ref, ref_tok)
+                                        info = analyze_token_and_refresh_expiration(acc_tok, ref_tok, int(time.time()))
+                                        server_ref_note = " | 🌐 تست سرور: رفرش‌توکن سالم و نوسازی شد ♻️✅"
+                                        async with lock:
+                                            token_exp_stats["refreshed_online"] += 1
+                                    elif r_state == "unrecoverable":
+                                        info["acc_is_valid"] = False
+                                        info["ref_est_valid"] = False
+                                        server_ref_note = " | 🌐 تست سرور: هر دو توکن باطل ❌"
+                                    else:
+                                        server_ref_note = " | ⚠️ خطای پروکسی در تست سرور"
+                                        async with lock:
+                                            token_exp_stats["proxy_error"] += 1
+                            elif ref_tok:
+                                r_state, n_acc, n_ref, _, _ = await loop.run_in_executor(
+                                    executor, api.refresh_token_sequential_proxy, ref_tok, idx
+                                )
+                                if r_state == "success" and n_acc:
+                                    acc_tok = n_acc
+                                    ref_tok = n_ref or ref_tok
+                                    data = update_tokens_in_data(data, old_acc, acc_tok, old_ref, ref_tok)
+                                    info = analyze_token_and_refresh_expiration(acc_tok, ref_tok, int(time.time()))
+                                    server_ref_note = " | 🌐 تست سرور: رفرش‌توکن فعال و توکن جدید دریافت شد ♻️✅"
+                                    async with lock:
+                                        token_exp_stats["refreshed_online"] += 1
+                                elif r_state == "unrecoverable":
+                                    info["ref_est_valid"] = False
+                                    info["ref_status_text"] = "❌ باطل شده در سرور (Unrecoverable)"
+                                    server_ref_note = " | 🌐 تست سرور: رفرش‌توکن منقضی/باطل ❌"
+                                else:
+                                    server_ref_note = " | ⚠️ خطای پروکسی در تست سرور"
+                                    async with lock:
+                                        token_exp_stats["proxy_error"] += 1
+
+                            if acc_tok and acc_tok != old_acc and phone:
+                                await redis_client.hset(f"account:{phone}", mapping={"access_token": acc_tok, "refresh_token": ref_tok or ""})
+                                if local_lid:
+                                    await redis_client.set(f"acc_link:{local_lid}", json.dumps(data, ensure_ascii=False))
+
+                        link_out = orig_url or phone_to_latest_link.get(phone) or (await redis_client.get(f"phone_active_link:{phone}") if phone else "") or ""
+
+                        async with lock:
+                            if info["acc_is_valid"]:
+                                token_exp_stats["acc_valid"] += 1
+                                cat = "acc_valid"
+                            elif info["has_refresh"] and info["ref_est_valid"]:
+                                token_exp_stats["acc_expired_ref_valid"] += 1
+                                cat = "ref_only"
+                            else:
+                                token_exp_stats["both_expired"] += 1
+                                cat = "dead"
+
+                            token_exp_results.append({
+                                "phone": phone,
+                                "source": source_label,
+                                "link": link_out,
+                                "cat": cat,
+                                "info": info,
+                                "server_note": server_ref_note
+                            })
+                            detail_logs.append(
+                                f"[{time.strftime('%H:%M:%S')}] 📱 {phone} ({source_label}) | Access: {info['acc_status_text']} | Refresh: {info['ref_status_text']}{server_ref_note}\n"
+                            )
+                            done += 1
+                            await _update_progress()
+                        return
+
                     if not acc_tok and ref_tok:
                         st, r_acc, r_ref, _, _ = await loop.run_in_executor(
                             executor, api.refresh_token_sequential_proxy, ref_tok, idx
@@ -3128,6 +3965,7 @@ async def process_user_submitted_targets_batch(bot, chat_id: int, mode: str, bat
                             done += 1
                             addr_stats["expired"] += 1
                             orders_stats["failed"] += 1
+                            profile_stats["expired"] += 1
                             detail_logs.append(f"[{time.strftime('%H:%M:%S')}] ❌ {phone} ({source_label}) | فاقد توکن معتبر\n")
                             await _update_progress()
                         return
@@ -3349,6 +4187,86 @@ async def process_user_submitted_targets_batch(bot, chat_id: int, mode: str, bat
                                 addr_stats["failed"] += 1
                                 detail_logs.append(f"[{time.strftime('%H:%M:%S')}] ❌ {phone} | خطا در حذف آدرس\n")
 
+                    # --- حالت ۵: بروزرسانی پروفایل (نام تصادفی و تاریخ تولد) برای لینک/زیپ ارسالی کاربر ---
+                    elif mode == 'user_update_profile':
+                        existing_prof = extract_profile_from_json_data(data)
+                        payload, name_gen, birth_gen = prepare_profile_update_payload(existing_prof)
+
+                        status, res = await loop.run_in_executor(
+                            executor, api.update_customer_profile_api, acc_tok, payload, proxy_dict, True
+                        )
+                        if status == 401 and ref_tok:
+                            st, n_acc, n_ref, _, _ = await loop.run_in_executor(
+                                executor, api.refresh_token_sequential_proxy, ref_tok, idx
+                            )
+                            if st == "success" and n_acc:
+                                acc_tok = n_acc
+                                ref_tok = n_ref or ref_tok
+                                data = update_tokens_in_data(data, old_acc, acc_tok, old_ref, ref_tok)
+                                status, res = await loop.run_in_executor(
+                                    executor, api.update_customer_profile_api, acc_tok, payload, proxy_dict, True
+                                )
+
+                        if status == 200 and isinstance(res, dict) and res.get("success") is not False:
+                            resp_data = res.get("data") if isinstance(res.get("data"), dict) else {}
+                            f_name = resp_data.get("firstName") or payload["firstName"]
+                            l_name = resp_data.get("lastName") or payload["lastName"]
+                            b_str = resp_data.get("birthDate") or ""
+                            b_ep = resp_data.get("birthDateEpoch") or payload["birthDateEpoch"]
+                            g_code = resp_data.get("genderCode") or payload["genderCode"]
+                            c_id = resp_data.get("id")
+
+                            data = update_profile_in_json_data(data, f_name, l_name, b_str, b_ep, g_code, c_id)
+
+                            if phone:
+                                await redis_client.hset(f"account:{phone}", mapping={"access_token": acc_tok, "refresh_token": ref_tok or ""})
+
+                            if local_lid:
+                                await redis_client.set(f"acc_link:{local_lid}", json.dumps(data, ensure_ascii=False))
+                                link_out = orig_url
+                            else:
+                                link_out = orig_url or phone_to_latest_link.get(phone) or (await redis_client.get(f"phone_active_link:{phone}") if phone else None)
+                                if link_out and '/acc/' in link_out:
+                                    ex_lid = link_out.split('/acc/')[-1].strip()
+                                    await redis_client.set(f"acc_link:{ex_lid}", json.dumps(data, ensure_ascii=False))
+                                else:
+                                    lid = str(uuid.uuid4())[:12]
+                                    await redis_client.set(f"acc_link:{lid}", json.dumps(data, ensure_ascii=False))
+                                    link_out = f"{WEB_DOMAIN}/acc/{lid}"
+                                    if phone:
+                                        await redis_client.set(f"phone_active_link:{phone}", link_out)
+
+                            b_readable = b_str.split("T")[0] if "T" in str(b_str) else datetime.fromtimestamp(b_ep).strftime("%Y-%m-%d")
+                            async with lock:
+                                profile_stats["updated"] += 1
+                                if name_gen:
+                                    profile_stats["random_named"] += 1
+                                profile_updated_list.append({
+                                    "phone": phone,
+                                    "name": f"{f_name} {l_name}",
+                                    "birth": b_readable,
+                                    "link": link_out,
+                                    "source": source_label
+                                })
+                                detail_logs.append(f"[{time.strftime('%H:%M:%S')}] ✅ {phone} | نام: {f_name} {l_name} | تولد: {b_readable} | {link_out}\n")
+                                if t_type == "json":
+                                    os.makedirs(updated_prof_json_dir, exist_ok=True)
+                                    has_updated_prof_json = True
+                                    safe_fn = os.path.basename(source_label)
+                                    if not safe_fn.lower().endswith('.json'):
+                                        safe_fn += '.json'
+                                    out_fp = os.path.join(updated_prof_json_dir, f"{idx+1}_{safe_fn}")
+                                    with open(out_fp, 'w', encoding='utf-8') as fw:
+                                        json.dump(data, fw, ensure_ascii=False)
+                        elif status == 401:
+                            async with lock:
+                                profile_stats["expired"] += 1
+                                detail_logs.append(f"[{time.strftime('%H:%M:%S')}] 🔒 {phone} | توکن منقضی شده است.\n")
+                        else:
+                            async with lock:
+                                profile_stats["failed"] += 1
+                                detail_logs.append(f"[{time.strftime('%H:%M:%S')}] ❌ {phone} | خطا در بروزرسانی پروفایل ({status}): {str(res)[:180]}\n")
+
                     async with lock:
                         done += 1
                         await _update_progress()
@@ -3515,6 +4433,83 @@ async def process_user_submitted_targets_batch(bot, chat_id: int, mode: str, bat
                 parse_mode='HTML'
             )
 
+        elif mode == 'user_update_profile':
+            summary_text = (
+                f"✅ <b>عملیات بروزرسانی پروفایل (نام و تاریخ تولد) به پایان رسید.</b>\n\n"
+                f"👥 <b>کل اکانت‌های بررسی‌شده:</b> <code>{total_targets}</code>\n"
+                f"🟢 <b>پروفایل بروزشده:</b> <code>{profile_stats['updated']}</code>\n"
+                f"🎲 <b>نام و تاریخ تولد تصادفی ثبت‌شده:</b> <code>{profile_stats['random_named']}</code>\n"
+                f"🔒 <b>توکن منقضی:</b> <code>{profile_stats['expired']}</code>\n"
+                f"🔴 <b>خطا:</b> <code>{profile_stats['failed']}</code>"
+            )
+            if profile_updated_list:
+                out_txt = f"👤 لیست اکانت‌های با پروفایل بروزشده ({len(profile_updated_list)} اکانت)\n" + "=" * 60 + "\n\n"
+                for idx, item in enumerate(profile_updated_list, 1):
+                    out_txt += f"{idx}. 📱 شماره: {item['phone']} | 👤 نام: {item['name']} | 🎂 تاریخ تولد: {item['birth']}\n🔗 {item['link']}\n\n"
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=io.BytesIO(out_txt.encode('utf-8')),
+                    filename=f"User_Profile_Updated_Links_{ts}.txt",
+                    caption=summary_text,
+                    parse_mode='HTML'
+                )
+            else:
+                await bot.send_message(chat_id=chat_id, text=summary_text, parse_mode='HTML')
+
+            if has_updated_prof_json:
+                zip_base = os.path.join(temp_out_dir, "Profile_Updated_Output")
+                zip_file_path = await asyncio.to_thread(shutil.make_archive, zip_base, 'zip', os.path.join(temp_out_dir, "Profile_Updated_Accounts"))
+                with open(zip_file_path, 'rb') as zf:
+                    await bot.send_document(
+                        chat_id=chat_id,
+                        document=zf,
+                        filename=f"Profile_Updated_Accounts_{ts}.zip",
+                        caption=f"📦 فایل ZIP اکانت‌های با پروفایل بروزشده ({profile_stats['updated']} اکانت)"
+                    )
+
+        elif mode in ('user_check_token_exp_fast', 'user_check_token_exp_online'):
+            online_verify = (mode == 'user_check_token_exp_online')
+            mode_label = "🌐 تست آنلاین با سرور + بررسی زمان انقضا" if online_verify else "⚡ بررسی سریع آفلاین (از روی JWT)"
+            token_exp_results.sort(key=lambda x: x["info"]["acc_remaining_sec"], reverse=True)
+
+            summary_text = (
+                f"⏳ <b>گزارش زمان انقضای توکن و رفرش‌توکن (لینک/زیپ ارسالی):</b>\n"
+                f"🔹 <b>حالت بررسی:</b> {mode_label}\n\n"
+                f"👥 <b>کل اکانت‌های بررسی‌شده:</b> <code>{total_targets}</code>\n"
+                f"🟢 <b>دارای Access Token فعال:</b> <code>{token_exp_stats['acc_valid']}</code>\n"
+                f"🟡 <b>Access منقضی ولی دارای Refresh Token معتبر:</b> <code>{token_exp_stats['acc_expired_ref_valid']}</code>\n"
+                f"🔴 <b>کاملاً منقضی / فاقد توکن:</b> <code>{token_exp_stats['both_expired']}</code>\n"
+            )
+            if online_verify:
+                summary_text += (
+                    f"♻️ <b>نوسازی‌شده با رفرش‌توکن در تست آنلاین:</b> <code>{token_exp_stats['refreshed_online']}</code>\n"
+                    f"⚠️ <b>خطای شبکه/پروکسی:</b> <code>{token_exp_stats['proxy_error']}</code>\n"
+                )
+
+            rep_lines = [
+                f"⏳ گزارش کامل انقضای Access Token و Refresh Token ({total_targets} اکانت ارسالی)",
+                f"حالت بررسی: {mode_label} | تاریخ گزارش: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                "=" * 75,
+                ""
+            ]
+            for idx, item in enumerate(token_exp_results, 1):
+                inf = item["info"]
+                rep_lines.append(f"{idx}. 📱 شماره: {item['phone']} ({item['source']}){item['server_note']}")
+                rep_lines.append(f"   🔑 وضعیت Access Token : {inf['acc_status_text']}")
+                rep_lines.append(f"   🕒 زمان صدور Access   : {inf['acc_iat_date']} | زمان ورود اولیه (OTP): {inf['auth_date']}")
+                rep_lines.append(f"   ♻️ وضعیت Refresh Token: {inf['ref_status_text']}")
+                if item.get("link"):
+                    rep_lines.append(f"   🔗 لینک: {item['link']}")
+                rep_lines.append("-" * 65)
+
+            await bot.send_document(
+                chat_id=chat_id,
+                document=io.BytesIO("\n".join(rep_lines).encode('utf-8')),
+                filename=f"User_Token_Expiration_Report_{ts}.txt",
+                caption=summary_text[:1020],
+                parse_mode='HTML'
+            )
+
         try:
             full_log = f"=== لاگ عملیات {title} | {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
             full_log += "".join(detail_logs) + "\n\n=== HTTP Logs ===\n" + "".join(api.request_logs)
@@ -3641,6 +4636,10 @@ def get_main_keyboard(is_admin_user, active_tag_name=None):
         InlineKeyboardButton("🔗 تبدیل دسته‌ای زیپ به لینک", callback_data="admin_zip_to_link"),
         InlineKeyboardButton("🎁 بررسی تخفیف لینک/زیپ", callback_data="admin_zip_discount")
     ])
+    keyboard.append([
+        InlineKeyboardButton("👤 بروزرسانی پروفایل (لینک/زیپ)", callback_data="admin_profile_user"),
+        InlineKeyboardButton("⏳ انقضای توکن (لینک/زیپ)", callback_data="admin_token_exp_user")
+    ])
 
     if is_admin_user:
         keyboard.append([InlineKeyboardButton("⚙️ پنل مدیریت کامل", callback_data="admin_panel")])
@@ -3667,6 +4666,16 @@ def get_admin_keyboard():
         [
             InlineKeyboardButton("🗑 حذف آدرس‌های دیتابیس", callback_data="admin_del_addr_db"),
             InlineKeyboardButton("🗑 حذف آدرس لینک/زیپ", callback_data="admin_del_addr_user")
+        ],
+        # --- دکمه‌های جدید بروزرسانی پروفایل (نام تصادفی و تاریخ تولد) ---
+        [
+            InlineKeyboardButton("👤 بروزرسانی پروفایل (لینک/زیپ)", callback_data="admin_profile_user"),
+            InlineKeyboardButton("👤 بروزرسانی پروفایل دیتابیس", callback_data="admin_profile_db")
+        ],
+        # --- دکمه‌های جدید بررسی انقضای توکن و رفرش‌توکن (لینک/زیپ و دیتابیس) ---
+        [
+            InlineKeyboardButton("⏳ انقضای توکن (لینک/زیپ)", callback_data="admin_token_exp_user"),
+            InlineKeyboardButton("⏳ انقضای توکن (دیتابیس)", callback_data="admin_token_exp_db")
         ],
         [InlineKeyboardButton("🧹 استخراج اکانت‌های خام (بدون خرید و آدرس)", callback_data="admin_extract_raw")],
         [InlineKeyboardButton("🎁 بررسی تخفیف دیتابیس (همه کدها)", callback_data="admin_check_discounts"), InlineKeyboardButton("📂 تفکیک فایل تخفیف", callback_data="admin_split_discount_file")],
@@ -4079,6 +5088,50 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['batch_status_msg_id'] = status_msg.message_id
         return
 
+    if data == "admin_profile_user":
+        await query.answer()
+        context.user_data['batch_collect_mode'] = 'user_update_profile'
+        context.user_data['admin_state'] = None
+        context.user_data['batch_items_queue'] = []
+        status_msg = await query.edit_message_text(
+            text=get_batch_collector_status_text('user_update_profile', context.user_data),
+            reply_markup=get_batch_collector_keyboard('user_update_profile', 0, 0, 0),
+            parse_mode='HTML'
+        )
+        context.user_data['batch_status_msg_id'] = status_msg.message_id
+        return
+
+    if data == "admin_token_exp_user":
+        await query.answer()
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ بررسی سریع (از روی JWT — بدون تغییر توکن)", callback_data="token_exp_user_mode_fast")],
+            [InlineKeyboardButton("🌐 بررسی آنلاین با سرور (تست زنده Access و Refresh)", callback_data="token_exp_user_mode_online")],
+            [InlineKeyboardButton("❌ انصراف و بازگشت", callback_data="admin_panel" if is_admin(user_id) else "main_menu")]
+        ])
+        await query.edit_message_text(
+            "⏳ <b>بررسی زمان انقضای توکن و رفرش‌توکن (لینک / فایل ZIP)</b>\n\n"
+            "لطفاً روش بررسی را انتخاب کنید:\n"
+            "1️⃣ <b>⚡ بررسی سریع (آفلاین):</b> استخراج زمان دقیق صدور و انقضای <code>Access Token</code> و تخمین انقضای ۳۰ روزه <code>Refresh Token</code> از روی اطلاعات JWT بدون مصرف یا تغییر توکن‌ها.\n"
+            "2️⃣ <b>🌐 بررسی آنلاین با سرور:</b> علاوه بر زمان‌بندی JWT، سلامت زنده <code>Access Token</code> و <code>Refresh Token</code> را مستقیماً از سرور اکالا تست می‌کند.",
+            reply_markup=kb,
+            parse_mode='HTML'
+        )
+        return
+
+    if data in ("token_exp_user_mode_fast", "token_exp_user_mode_online"):
+        await query.answer()
+        mode_key = 'user_check_token_exp_fast' if data == "token_exp_user_mode_fast" else 'user_check_token_exp_online'
+        context.user_data['batch_collect_mode'] = mode_key
+        context.user_data['admin_state'] = None
+        context.user_data['batch_items_queue'] = []
+        status_msg = await query.edit_message_text(
+            text=get_batch_collector_status_text(mode_key, context.user_data),
+            reply_markup=get_batch_collector_keyboard(mode_key, 0, 0, 0),
+            parse_mode='HTML'
+        )
+        context.user_data['batch_status_msg_id'] = status_msg.message_id
+        return
+
     if data == "admin_addr_user":
         await query.answer()
         context.user_data['admin_state'] = 'waiting_addr_config_for_user'
@@ -4170,6 +5223,36 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text="⚠️ دیتابیس سیستم خالی است.")
             return
         asyncio.create_task(process_delete_addresses_for_db(context.bot, user_id, acc_keys))
+
+    elif data == "admin_profile_db":
+        acc_keys = await redis_client.keys("account:*")
+        if not acc_keys:
+            await context.bot.send_message(chat_id=user_id, text="⚠️ دیتابیس سیستم خالی است.")
+            return
+        asyncio.create_task(process_update_profile_for_db(context.bot, user_id, acc_keys))
+
+    elif data == "admin_token_exp_db":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ بررسی سریع دیتابیس (از روی JWT — بدون تغییر توکن)", callback_data="token_exp_db_mode_fast")],
+            [InlineKeyboardButton("🌐 بررسی آنلاین دیتابیس با سرور (تست زنده توکن‌ها)", callback_data="token_exp_db_mode_online")],
+            [InlineKeyboardButton("🔙 بازگشت به پنل مدیریت", callback_data="admin_panel")]
+        ])
+        await query.edit_message_text(
+            "⏳ <b>بررسی زمان انقضای توکن و رفرش‌توکن اکانت‌های دیتابیس</b>\n\n"
+            "لطفاً روش بررسی را انتخاب کنید:\n"
+            "1️⃣ <b>⚡ بررسی سریع (آفلاین):</b> محاسبه دقیق زمان انقضای <code>Access Token</code> و تخمین انقضای ۳۰ روزه <code>Refresh Token</code> برای کل دیتابیس در چند ثانیه (بدون تغییر توکن‌ها).\n"
+            "2️⃣ <b>🌐 بررسی آنلاین با سرور:</b> تست زنده اعتبار <code>Access Token</code> و <code>Refresh Token</code> در سرور اکالا به همراه گزارش کامل زمان انقضا.",
+            reply_markup=kb,
+            parse_mode='HTML'
+        )
+
+    elif data in ("token_exp_db_mode_fast", "token_exp_db_mode_online"):
+        acc_keys = await redis_client.keys("account:*")
+        if not acc_keys:
+            await context.bot.send_message(chat_id=user_id, text="⚠️ دیتابیس سیستم خالی است.")
+            return
+        online_flag = (data == "token_exp_db_mode_online")
+        asyncio.create_task(process_db_token_expiration_report(context.bot, user_id, acc_keys, online_verify=online_flag))
 
     elif data == "admin_del_addr_user":
         context.user_data['batch_collect_mode'] = 'user_delete_addresses'
@@ -4823,14 +5906,21 @@ async def verify_otp_and_check_name(update: Update, context: ContextTypes.DEFAUL
 
             if not has_name:
                 await msg.edit_text("⚙️ اکانت خام شناسایی شد. در حال ثبت نام تصادفی...")
-                first_name, last_name = get_random_persian_name()
+                rand_prof = get_random_persian_profile()
+                first_name, last_name = rand_prof["firstName"], rand_prof["lastName"]
                 update_name_url = "https://apigateway.okala.com/api/voyager/C/CustomerAccount/UpdateCustomer"
                 req_headers = get_user_headers(context)
                 req_headers["Authorization"] = f"Bearer {access_token}"
                 update_payload = {
-                    "birthDate": "", "birthDateEpoch": 700086600, "customerType": 0,
-                    "firstName": first_name, "genderCode": 1, "genderTitle": "مذکر",
-                    "lastName": last_name, "gender": "male"
+                    "birthDate": "",
+                    "birthDateEpoch": rand_prof["birthDateEpoch"],
+                    "customerType": 0,
+                    "emailAddress": "",
+                    "firstName": first_name,
+                    "genderCode": rand_prof["genderCode"],
+                    "genderTitle": rand_prof["genderTitle"],
+                    "lastName": last_name,
+                    "gender": rand_prof["gender"]
                 }
 
                 try:
@@ -4962,7 +6052,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # راه‌اندازی اصلی
 # ==========================================
 CALLBACK_PATTERN = (
-    r"^(admin_|auth_|batch_|addr_preset_|request_bot_access$|main_menu$|"
+    r"^(admin_|auth_|batch_|addr_preset_|token_exp_|request_bot_access$|main_menu$|"
     r"admin_panel$|finish_link_creation$|my_tags$|show_tag_)"
 )
 
